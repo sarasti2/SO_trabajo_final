@@ -1,7 +1,7 @@
 import csv
 import os
 
-from montecarlo_parallel import run_parallel
+from montecarlo_parallel_pool import run_parallel
 from montecarlo_sequential import run_sequential
 
 
@@ -17,8 +17,8 @@ def run_multiple_experiments(portfolio, iterations, results_file, case, num_expe
             "Elapsed Time (s)", "Memory Used (MB)", "CPU Used (%)"
         ])
 
-        # Realiza 1000 experimentos
-        for experiment in range(86, num_experiments + 1):
+        # Realiza 100 experimentos
+        for experiment in range(28, num_experiments + 1):
             print(f"\nRunning experiment {experiment}/{num_experiments} for case {case}...")
 
             # Ejecución secuencial
@@ -59,7 +59,7 @@ def run_multiple_experiments(portfolio, iterations, results_file, case, num_expe
 if __name__ == "__main__":
     portfolio = ["AAPL", "MSFT", "GOOGL"]  # Tickers de ejemplo
     cases = {
-        "large": 100_000,
+        "extra_large2": 1_000_000,
     }
     results_dir = "data/results"
     os.makedirs(results_dir, exist_ok=True)
@@ -68,4 +68,4 @@ if __name__ == "__main__":
     for case, iterations in cases.items():
         print(f"\nRunning {case} case with {iterations} iterations for portfolio: {portfolio}.")
         results_file = os.path.join(results_dir, f"{case}_experiments.csv")
-        run_multiple_experiments(portfolio, iterations, results_file, case, num_experiments=256)
+        run_multiple_experiments(portfolio, iterations, results_file, case, num_experiments=126)

@@ -1,12 +1,11 @@
-import csv
 import os
 import threading
 import time
+from multiprocessing import Pool, shared_memory
 
 import numpy as np
 import psutil
 import yfinance as yf
-from scipy.stats import norm
 
 
 class ResourceMonitor:
@@ -23,7 +22,7 @@ class ResourceMonitor:
     def _monitor_cpu(self):
         """Monitor CPU usage at regular intervals."""
         while self.monitoring:
-            self.cpu_usage.append(psutil.cpu_percent(interval=0.1))  # Interval of 100ms
+            self.cpu_usage.append(psutil.cpu_percent(interval=0.1))  # 100ms interval
             time.sleep(0.1)
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -51,37 +50,42 @@ def calculate_daily_returns(prices):
     return prices.pct_change().dropna()
 
 
-def montecarlo_task(daily_returns, start_price, results, index):
-    """Simulate a single Monte Carlo run."""
-    random_returns = np.random.choice(daily_returns, size=len(daily_returns))
-    results[index] = start_price * np.cumprod(1 + random_returns)[-1]
+def montecarlo_batch_shared(batch_size, start_price, shm_name, shape, dtype):
+    """Simulate Monte Carlo runs for a batch using shared memory."""
+    existing_shm = shared_memory.SharedMemory(name=shm_name)
+    shared_daily_returns = np.ndarray(shape, dtype=dtype, buffer=existing_shm.buf)
+    random_returns = np.random.choice(shared_daily_returns, size=(batch_size, len(shared_daily_returns)))
+    existing_shm.close()
+    return start_price * np.prod(1 + random_returns, axis=1)
 
 
-def simulate_prices_threaded(start_price, daily_returns, iterations, threads):
-    """Simulate future prices using Monte Carlo with threading."""
-    results = [None] * iterations
-    threads_list = []
+def simulate_prices_parallel(start_price, daily_returns, iterations, threads):
+    """Simulate future prices using Monte Carlo in parallel with batching."""
+    batch_size = iterations // threads
+    extra = iterations % threads
 
-    for i in range(iterations):
-        thread = threading.Thread(target=montecarlo_task, args=(daily_returns, start_price, results, i))
-        threads_list.append(thread)
-        thread.start()
+    # Shared memory setup
+    shm = shared_memory.SharedMemory(create=True, size=daily_returns.nbytes)
+    shm_array = np.ndarray(daily_returns.shape, dtype=daily_returns.dtype, buffer=shm.buf)
+    np.copyto(shm_array, daily_returns)
 
-        # Ensure we don't exceed the thread limit
-        if len(threads_list) >= threads:
-            for t in threads_list:
-                t.join()
-            threads_list = []
+    tasks = [(batch_size, start_price, shm.name, daily_returns.shape, daily_returns.dtype)] * threads
+    if extra:
+        tasks.append((extra, start_price, shm.name, daily_returns.shape, daily_returns.dtype))
 
-    # Join remaining threads
-    for t in threads_list:
-        t.join()
+    with Pool(threads) as pool:
+        results = np.concatenate(pool.starmap(montecarlo_batch_shared, tasks))
 
+    # Cleanup shared memory
+    shm.close()
+    shm.unlink()
+
+    # Calculate statistics
     mean_price = np.mean(results)
     std_dev = np.std(results)
 
     # Confidence intervals
-    z = 1.96  # 95% confidence interval
+    z = 1.96
     margin_error = z * (std_dev / np.sqrt(iterations))
     conf_interval = (mean_price - margin_error, mean_price + margin_error)
 
@@ -98,8 +102,8 @@ def run_parallel(portfolio, iterations, threads, results_dir, case):
             daily_returns = calculate_daily_returns(prices)
             start_price = prices.iloc[-1]
 
-            print(f"Running threaded simulation for {ticker} with {threads} threads...")
-            mean_price, std_dev, conf_interval = simulate_prices_threaded(
+            print(f"Running parallel simulation for {ticker} with {threads} threads...")
+            mean_price, std_dev, conf_interval = simulate_prices_parallel(
                 start_price, daily_returns, iterations, threads
             )
             profit_pct = ((mean_price - start_price) / start_price) * 100
@@ -115,7 +119,7 @@ def run_parallel(portfolio, iterations, threads, results_dir, case):
 
     elapsed_time, used_memory, avg_cpu_usage = monitor.get_metrics()
 
-    # Append metrics to each result
+    # Add metrics to the end of each result
     for result in all_results:
         result.extend([elapsed_time, used_memory, avg_cpu_usage])
 
